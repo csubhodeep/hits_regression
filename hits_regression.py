@@ -35,9 +35,10 @@ class HitsRegression:
     def dispose(self):
         """
         Deletes this instance from memory
-        :return:
+        :return: None
         """
         del(self)
+        return None
 
     def get_scores(self,y_true, y_pred):
         """
@@ -63,7 +64,7 @@ class HitsRegression:
         """
         This function reads data from disk
         :param path: A path on the disk
-        :return: raw data of type 2d numpy float64 arrays.
+        :return: raw data of type pandas dataframe
         """
         try:
             raw_data = pd.read_csv(path,delimiter=';',nrows=max_rows).fillna("0")
@@ -120,10 +121,10 @@ class HitsRegression:
     def replace_columns(self,data,old_column_name,series):
         """
         this is an auxiliary function to replace an old column in a dataframe with an old one
-        :param data:
-        :param old_column_name:
-        :param series:
-        :return:
+        :param data: original dataframe
+        :param old_column_name: name of column to be dropped
+        :param series: the series that is to be joined with the old data frame
+        :return: new data frame
         """
         data = data.drop(old_column_name,axis=1).join(series)
         return data
@@ -240,7 +241,7 @@ class HitsRegression:
 
     def predict(self,input):
         """
-        This function gives predictions for a certain input.
+        A wrapper function gives predictions for a certain input.
         :param input: (test) input
         :return: predictions
         """

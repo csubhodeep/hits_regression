@@ -1,1 +1,1 @@
-# hotel_search_hits_regression
+# hits_regression
