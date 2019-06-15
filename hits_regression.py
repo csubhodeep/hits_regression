@@ -150,9 +150,14 @@ class HitsRegression:
             data.loc[data["hits"] == "\\N", 'revised_hits'] = "-1"
             data.loc[data["hits"] != "\\N", 'revised_hits'] = data.hits
 
+            logging.info("staring feature engineering")
+
             # distribute hits for each path id
             distributed_hit_series = self.get_distributed_hits(data)
             data = self.replace_columns(data, "revised_hits",distributed_hit_series)
+
+            # get total number of locations visited
+            number_of_locations_visited_df = pd.DataFrame(self.get_total_locations(data))
 
             # explode path id for each row into multiple rows
             path_id_series = self.get_path_id(data)
@@ -161,17 +166,47 @@ class HitsRegression:
             # converting categorical columns to one-hot-encoded form into multiple columns
             locale_dummy_df = pd.get_dummies(data["locale"])
             day_of_week_dummy_df = pd.get_dummies(data["day_of_week"])
-            data = data.reindex()
+            agent_id_dummy_df = pd.get_dummies(data["agent_id"])
+            traffic_type_dummy_df = pd.get_dummies(data["traffic_type"])
+            hour_of_day_dummy_df = pd.get_dummies(data["hour_of_day"])
+
+            # scaling some columns - entry page, path id and session duration
+            new_array = data[["path_id","entry_page","session_duration"]].values
+
+            scaled_array = MinMaxScaler(feature_range=(0.05,0.95)).fit_transform(StandardScaler().fit_transform(new_array))
+
+            scaled_df = pd.DataFrame({"new_path_id":scaled_array[:,0],
+                                      "new_entry_page":scaled_array[:,1],
+                                     "new_session_duration":scaled_array[:,2]})
+
+
+
+
+
 
             # removing un-necessary columns
-            data = data.drop(["locale","day_of_week","hits"],axis=1)
+            list_of_features_to_remove = ["locale","day_of_week","hour_of_day",
+                                          "hits","agent_id","traffic_type",
+                                          "session_duration","entry_page","path_id"]
+            data = data.drop(list_of_features_to_remove,axis=1)
+
 
             # attaching the new columns to the original data
             data = pd.concat([data, locale_dummy_df],axis=1)
             data = pd.concat([data, day_of_week_dummy_df], axis=1)
+            data = pd.concat([data, agent_id_dummy_df], axis=1)
+            data = pd.concat([data, traffic_type_dummy_df], axis=1)
+            data = pd.concat([data, hour_of_day_dummy_df], axis=1)
+            data = pd.concat([data, number_of_locations_visited_df],axis=1)
+
+            data.reset_index(drop=True, inplace=True)
+            data = pd.concat([data, scaled_df],axis=1)
+
+
 
             # separating the validation and train-test data sets
             data_train_test = data.loc[data["distributed_hits"]>=0]
+
             data_validation = data.loc[data["distributed_hits"]<0]
 
             # separating input and output columns
@@ -180,32 +215,28 @@ class HitsRegression:
             list_of_input_features.remove("row_num")
             input_data_train_test = data_train_test[list_of_input_features]
             output_data_train_test = data_train_test[["row_num","distributed_hits"]]
-            input_data_validation = data_validation[list_of_input_features]
+            input_data_validation = data_validation.drop("distributed_hits",axis=1)
 
             # shuffle and split train and test inputs and outputs
             x_train, x_test, y_train, y_test = train_test_split(input_data_train_test, output_data_train_test,shuffle=True)
 
 
             # initialising the scalers
-            scaler_x = StandardScaler()
             scaler_y = StandardScaler()
 
             # fitting scalers
-            scaler_x.fit(x_train)
             scaler_y.fit(y_train["distributed_hits"].values.reshape(-1,1))
 
             # scaling input and validation dataset
-            x_train_std = scaler_x.transform(x_train)
-            x_test_std = scaler_x.transform(x_test)
-            x_val_std = scaler_x.transform(input_data_validation.values)
+
 
             # attaching row_num with the validation input dataset
-            x_val_std = np.hstack((data_validation["row_num"].values.reshape(-1,1), x_val_std))
+            x_val = input_data_validation.values
 
             # scaling output dataset
             y_train_std = scaler_y.transform(y_train["distributed_hits"].values.reshape(-1,1))
 
-            return x_train_std, y_train_std, x_test_std, y_test, x_val_std, scaler_y
+            return x_train, y_train_std, x_test, y_test, x_val, scaler_y
         except AssertionError as error:
             print("check input data")
 
