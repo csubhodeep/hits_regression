@@ -103,25 +103,50 @@ class HitsRegression:
 
         return data
 
-    def get_path_id(self,data):
+        def get_path_id(self,data):
         """
-        this function creates a column/series to explode the path_id_set column
+        this function creates a column/series to explode the path_id_set column into multiple rows
         :param data: the input dataframe
         :return: series/column of path_id
         """
         try:
-            s1 = data["path_id_set"].apply(lambda x: str(x).split(";")) #convert to string if not already
+
+            def perform_split(value, separator):
+                """
+                this is an auxiliary splitting function
+                :param value: the input (non-)string
+                :param separator: the splitter/delimiter
+                :return: list of strings
+                """
+                string = str(value)
+                if string == "":
+                    return [0]
+                else:
+                    return string.split(separator)
+
+            s1 = data["path_id_set"].apply(lambda x: perform_split(x,";"))  # convert to string if not already
             s2 = s1.apply(pd.Series, 1).stack().reset_index(level=1, drop=True)
             s2.name = "path_id"
             data = data.join(s2)
-            data.loc[data["path_id"] == "nan"] = 0
+
             return data
         except:
             logging.error("check input")
 
     def get_total_locations(self,data):
+        """
+        this is a function to count the total locations visited in a particular session
+        :param data: the input data frame
+        :return: data frame with a new column having the count
+        """
 
         def perform_split(string,separator):
+            """
+            this is an auxiliary splitting function
+            :param value: the input (non-)string
+            :param separator: the splitter/delimiter
+            :return: list of strings
+            """
             if string == "":
                 return 0
             else:
@@ -132,6 +157,12 @@ class HitsRegression:
         return data
 
     def get_total_hits_and_sessions(self,data):
+        """
+        this function calculates the fraction of times a particular entry page has been visited
+        and the fraction of hits it has accumulated
+        :param data: original data frame
+        :return: a new data frame with 2 columns containing the fraction for each entry page
+        """
         sessions_per_entry_page = data.groupby("entry_page")["row_num"].count()
         hits_per_entry_page = data.groupby("entry_page")["revised_hits"].sum()
         df_ep = pd.DataFrame({"total_sessions": sessions_per_entry_page, "total_hits": hits_per_entry_page})
@@ -139,22 +170,52 @@ class HitsRegression:
         total_hits_all_pages = df_ep["total_hits"].sum()
         total_sessions_all_pages = df_ep["total_sessions"].sum()
 
-        df_ep["session_probability"] = df_ep.apply(lambda row: float(row.total_sessions)/total_sessions_all_pages, axis=1)
-        df_ep["hits_probability"] = df_ep.apply(lambda row: float(row.total_hits)/total_hits_all_pages, axis=1)
+        df_ep["session_fraction"] = df_ep.apply(lambda row: float(row.total_sessions)/total_sessions_all_pages, axis=1)
+        df_ep["hits_fraction"] = df_ep.apply(lambda row: float(row.total_hits)/total_hits_all_pages, axis=1)
 
         df_ep = df_ep.drop(["total_sessions","total_hits"],axis=1)
 
         return df_ep
 
     def get_revised_hits(self,data):
-
+        """
+        this function helps to clean the 'hits' column
+        :param data: original data frame
+        :return: new data frame with a 'revised hits' column
+        """
         def clean(value):
+            """
+            this is an auxiliary function to check and substitute values
+            :param value: the hits value
+            :return: hits value casted to integer
+            """
             if value == "\\N":
                 return -1
             else:
                 return int(value)
 
         data["revised_hits"] = data.apply(lambda row:clean(row.hits),axis=1)
+        return data
+
+    def clean_session_duration(self,data):
+        """
+        this function cleans the column - 'session duration'
+        :param data: the original dataframe
+        :return: data frame with the 'session duration' column cleaned
+        """
+        def clean(value):
+			"""
+            this function checks for null values
+            :param value: session duration
+            :return: integer
+            """
+            if value.session_duration == "\\N":
+                value.session_duration = 0
+            else:
+                pass
+            return value
+
+        data = data.apply(lambda row:clean(row),axis=1)
         return data
 
     def pre_process(self,data):
@@ -171,20 +232,20 @@ class HitsRegression:
 
             logging.info("preliminary cleaning")
 
-            # handling the column having the null values
-
-            # filling null values with zero in the 'session duration' column
-            data.loc[data["session_duration"] == "\\N"] = 0
+            # clean 'session duration' column
+            data = self.clean_session_duration(data)
 
             # the rows having negative hits will help us identify as the validation dataset
             # the validation data set is the one used to create the final results for submission
             # get revised hits
             data = self.get_revised_hits(data)
 
+
             logging.info("staring feature engineering")
 
             # distribute hits for each path id
             data = self.get_distributed_hits(data)
+
 
             # get total number of locations visited
             data = self.get_total_locations(data)
@@ -196,16 +257,13 @@ class HitsRegression:
             traffic_type_dummy_df = pd.get_dummies(data["traffic_type"])
             hour_of_day_dummy_df = pd.get_dummies(data["hour_of_day"])
 
-
-
-
-            # get probability of hits and sessions
-            df_prob_hits_sessions = self.get_total_hits_and_sessions(data.loc[data["distributed_hits"] >= 0])
+            # get fraction of hits and sessions
+            df_fraction_hits_sessions = self.get_total_hits_and_sessions(data.loc[data["distributed_hits"] >= 0])
 
             # join the new features with the original data
-            data = data.join(df_prob_hits_sessions, on="entry_page")
-			
-			# check for null values and fill them with zero if present
+            data = data.join(df_fraction_hits_sessions, on="entry_page")
+
+            # check for null values and fill them with zero if present
             data = data.fillna(0)
 
             # explode path id for each row into multiple rows
@@ -244,6 +302,10 @@ class HitsRegression:
             # adding the scaled non categorical features
             data = pd.concat([data, scaled_df],axis=1)
 
+            # ensure that the data is clean
+            assert(np.any(np.isnan(data.values))==False)
+            assert(np.any(np.isinf(data.values))==False)
+
 
             # separating the validation and train-test data sets
             data_train_test = data.loc[data["distributed_hits"] >= 0]
@@ -258,7 +320,6 @@ class HitsRegression:
             # shuffle and split train and test inputs and outputs
             x_train, x_test, y_train, y_test = train_test_split(input_data_train_test, output_data_train_test,shuffle=True)
 
-
             # initialising the scalers
             scaler_y = StandardScaler()
 
@@ -268,14 +329,15 @@ class HitsRegression:
             # attaching row_num with the validation input dataset
             x_val = input_data_validation.values
 
+
             # scaling output dataset
             y_train_std = scaler_y.transform(y_train["distributed_hits"].values.reshape(-1,1))
 
             return x_train, y_train_std, x_test, y_test, x_val, scaler_y
         except AssertionError as error:
-            print("check input data")
-
-
+            print("NaN or Inf in main dataset")
+			
+			
     @timeit
     def train(self,x_train,y_train):
         """
