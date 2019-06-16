@@ -248,10 +248,7 @@ class HitsRegression:
 
 
             # separating input and output columns
-            list_of_input_features = list(data.columns)
-            list_of_input_features.remove("distributed_hits")
-            list_of_input_features.remove("row_num")
-            input_data_train_test = data_train_test[list_of_input_features]
+            input_data_train_test = data_train_test.copy().drop(["distributed_hits","row_num"],axis=1)
             output_data_train_test = data_train_test[["row_num","distributed_hits"]]
             input_data_validation = data_validation.drop("distributed_hits",axis=1)
 
