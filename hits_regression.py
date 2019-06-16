@@ -4,7 +4,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error as mse
 import warnings
 import logging
@@ -204,6 +204,9 @@ class HitsRegression:
 
             # join the new features with the original data
             data = data.join(df_prob_hits_sessions, on="entry_page")
+			
+			# check for null values and fill them with zero if present
+            data = data.fillna(0)
 
             # explode path id for each row into multiple rows
             data = self.get_path_id(data)
