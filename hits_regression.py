@@ -67,7 +67,7 @@ class HitsRegression:
         :return: raw data of type pandas dataframe
         """
         try:
-            raw_data = pd.read_csv(path,delimiter=';',nrows=max_rows).fillna("0")
+            raw_data = pd.read_csv(path,delimiter=';',nrows=max_rows)
             return raw_data
         except:
             logging.error("Invalid path")
@@ -99,9 +99,9 @@ class HitsRegression:
         :param data: the input dataframe
         :return: series/column of distributed hits
         """
-        s = data.apply(lambda row: float(row.revised_hits) / len(str(row.path_id_set).split(";")), axis=1)
-        s.name = "distributed_hits"
-        return s
+        data["distributed_hits"] = data.apply(lambda row: float(row.revised_hits) / len(str(row.path_id_set).split(";")), axis=1)
+
+        return data
 
     def get_path_id(self,data):
         """
@@ -113,20 +113,48 @@ class HitsRegression:
             s1 = data["path_id_set"].apply(lambda x: str(x).split(";")) #convert to string if not already
             s2 = s1.apply(pd.Series, 1).stack().reset_index(level=1, drop=True)
             s2.name = "path_id"
-            #assert pd.isnull(s2)==False
-            return s2
+            data = data.join(s2)
+            data.loc[data["path_id"] == "nan"] = 0
+            return data
         except:
-            logging.error("null values created during explosion of path_id_set")
+            logging.error("check input")
 
-    def replace_columns(self,data,old_column_name,series):
-        """
-        this is an auxiliary function to replace an old column in a dataframe with an old one
-        :param data: original dataframe
-        :param old_column_name: name of column to be dropped
-        :param series: the series that is to be joined with the old data frame
-        :return: new data frame
-        """
-        data = data.drop(old_column_name,axis=1).join(series)
+    def get_total_locations(self,data):
+
+        def perform_split(string,separator):
+            if string == "":
+                return 0
+            else:
+                return len(string.split(separator))
+
+
+        data["number_of_locations_visited"] = data.apply(lambda row: perform_split(str(row.path_id_set),";"), axis=1)
+        return data
+
+    def get_total_hits_and_sessions(self,data):
+        sessions_per_entry_page = data.groupby("entry_page")["row_num"].count()
+        hits_per_entry_page = data.groupby("entry_page")["revised_hits"].sum()
+        df_ep = pd.DataFrame({"total_sessions": sessions_per_entry_page, "total_hits": hits_per_entry_page})
+
+        total_hits_all_pages = df_ep["total_hits"].sum()
+        total_sessions_all_pages = df_ep["total_sessions"].sum()
+
+        df_ep["session_probability"] = df_ep.apply(lambda row: float(row.total_sessions)/total_sessions_all_pages, axis=1)
+        df_ep["hits_probability"] = df_ep.apply(lambda row: float(row.total_hits)/total_hits_all_pages, axis=1)
+
+        df_ep = df_ep.drop(["total_sessions","total_hits"],axis=1)
+
+        return df_ep
+
+    def get_revised_hits(self,data):
+
+        def clean(value):
+            if value == "\\N":
+                return -1
+            else:
+                return int(value)
+
+        data["revised_hits"] = data.apply(lambda row:clean(row.hits),axis=1)
         return data
 
     def pre_process(self,data):
@@ -141,27 +169,25 @@ class HitsRegression:
             assert isinstance(data,pd.DataFrame),"data is not of type pandas.Dataframe"
             logging.info("Pre processing raw data")
 
-            # filling null values with zero in the 'session duration' column
-            data.loc[data["session_duration"]=="\\N"] = 0
+            logging.info("preliminary cleaning")
 
-            # handling the column having the null values for 'hits'
+            # handling the column having the null values
+
+            # filling null values with zero in the 'session duration' column
+            data.loc[data["session_duration"] == "\\N"] = 0
+
             # the rows having negative hits will help us identify as the validation dataset
             # the validation data set is the one used to create the final results for submission
-            data.loc[data["hits"] == "\\N", 'revised_hits'] = "-1"
-            data.loc[data["hits"] != "\\N", 'revised_hits'] = data.hits
+            # get revised hits
+            data = self.get_revised_hits(data)
 
             logging.info("staring feature engineering")
 
             # distribute hits for each path id
-            distributed_hit_series = self.get_distributed_hits(data)
-            data = self.replace_columns(data, "revised_hits",distributed_hit_series)
+            data = self.get_distributed_hits(data)
 
             # get total number of locations visited
-            number_of_locations_visited_df = pd.DataFrame(self.get_total_locations(data))
-
-            # explode path id for each row into multiple rows
-            path_id_series = self.get_path_id(data)
-            data = self.replace_columns(data,"path_id_set",path_id_series)
+            data = self.get_total_locations(data)
 
             # converting categorical columns to one-hot-encoded form into multiple columns
             locale_dummy_df = pd.get_dummies(data["locale"])
@@ -170,44 +196,56 @@ class HitsRegression:
             traffic_type_dummy_df = pd.get_dummies(data["traffic_type"])
             hour_of_day_dummy_df = pd.get_dummies(data["hour_of_day"])
 
-            # scaling some columns - entry page, path id and session duration
-            new_array = data[["path_id","entry_page","session_duration"]].values
-
-            scaled_array = MinMaxScaler(feature_range=(0.05,0.95)).fit_transform(StandardScaler().fit_transform(new_array))
-
-            scaled_df = pd.DataFrame({"new_path_id":scaled_array[:,0],
-                                      "new_entry_page":scaled_array[:,1],
-                                     "new_session_duration":scaled_array[:,2]})
 
 
 
+            # get probability of hits and sessions
+            df_prob_hits_sessions = self.get_total_hits_and_sessions(data.loc[data["distributed_hits"] >= 0])
 
+            # join the new features with the original data
+            data = data.join(df_prob_hits_sessions, on="entry_page")
 
+            # explode path id for each row into multiple rows
+            data = self.get_path_id(data)
+
+            # scaling some columns - entry page, path id, session duration and number of locations visited
+            array_of_non_categorical_features = data[["path_id", "entry_page", "session_duration", "number_of_locations_visited"]].values
+
+            scaled_array = MinMaxScaler(feature_range=(0.05, 0.95)).fit_transform(
+                StandardScaler().fit_transform(array_of_non_categorical_features))
+
+            scaled_df = pd.DataFrame({"new_path_id": scaled_array[:, 0],
+                                      "new_entry_page": scaled_array[:, 1],
+                                      "new_session_duration": scaled_array[:, 2],
+                                      "new_number_of_locations_visited":scaled_array[:,3]})
 
             # removing un-necessary columns
-            list_of_features_to_remove = ["locale","day_of_week","hour_of_day",
-                                          "hits","agent_id","traffic_type",
-                                          "session_duration","entry_page","path_id"]
-            data = data.drop(list_of_features_to_remove,axis=1)
-
+            list_of_features_to_remove = ["locale", "day_of_week", "hour_of_day",
+                                          "hits", "agent_id", "traffic_type",
+                                          "path_id", "entry_page", "session_duration",
+                                          "revised_hits","path_id_set","number_of_locations_visited"]
+            data = data.drop(list_of_features_to_remove, axis=1)
 
             # attaching the new columns to the original data
-            data = pd.concat([data, locale_dummy_df],axis=1)
+            data = pd.concat([data, locale_dummy_df], axis=1)
             data = pd.concat([data, day_of_week_dummy_df], axis=1)
             data = pd.concat([data, agent_id_dummy_df], axis=1)
             data = pd.concat([data, traffic_type_dummy_df], axis=1)
             data = pd.concat([data, hour_of_day_dummy_df], axis=1)
-            data = pd.concat([data, number_of_locations_visited_df],axis=1)
 
+            # resetting the indices of the dataframe as 'row_num' is not unique anymore
+            # this is a part which is something very specific to pandas
             data.reset_index(drop=True, inplace=True)
+
+
+            # adding the scaled non categorical features
             data = pd.concat([data, scaled_df],axis=1)
 
 
-
             # separating the validation and train-test data sets
-            data_train_test = data.loc[data["distributed_hits"]>=0]
+            data_train_test = data.loc[data["distributed_hits"] >= 0]
+            data_validation = data.loc[data["distributed_hits"] < 0]
 
-            data_validation = data.loc[data["distributed_hits"]<0]
 
             # separating input and output columns
             list_of_input_features = list(data.columns)
@@ -227,9 +265,6 @@ class HitsRegression:
             # fitting scalers
             scaler_y.fit(y_train["distributed_hits"].values.reshape(-1,1))
 
-            # scaling input and validation dataset
-
-
             # attaching row_num with the validation input dataset
             x_val = input_data_validation.values
 
@@ -239,6 +274,7 @@ class HitsRegression:
             return x_train, y_train_std, x_test, y_test, x_val, scaler_y
         except AssertionError as error:
             print("check input data")
+
 
     @timeit
     def train(self,x_train,y_train):
