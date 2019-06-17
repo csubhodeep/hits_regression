@@ -103,12 +103,13 @@ class HitsRegression:
 
         return data
 
-        def get_path_id(self,data):
+    def get_path_id(self, data):
         """
         this function creates a column/series to explode the path_id_set column into multiple rows
         :param data: the input dataframe
         :return: series/column of path_id
         """
+
         try:
 
             def perform_split(value, separator):
@@ -124,7 +125,7 @@ class HitsRegression:
                 else:
                     return string.split(separator)
 
-            s1 = data["path_id_set"].apply(lambda x: perform_split(x,";"))  # convert to string if not already
+            s1 = data["path_id_set"].apply(lambda x: perform_split(x, ";"))  # convert to string if not already
             s2 = s1.apply(pd.Series, 1).stack().reset_index(level=1, drop=True)
             s2.name = "path_id"
             data = data.join(s2)
@@ -204,7 +205,7 @@ class HitsRegression:
         :return: data frame with the 'session duration' column cleaned
         """
         def clean(value):
-			"""
+            """
             this function checks for null values
             :param value: session duration
             :return: integer
@@ -213,6 +214,7 @@ class HitsRegression:
                 value.session_duration = 0
             else:
                 pass
+
             return value
 
         data = data.apply(lambda row:clean(row),axis=1)
