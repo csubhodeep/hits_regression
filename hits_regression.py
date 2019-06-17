@@ -157,26 +157,33 @@ class HitsRegression:
         data["number_of_locations_visited"] = data.apply(lambda row: perform_split(str(row.path_id_set),";"), axis=1)
         return data
 
-    def get_total_hits_and_sessions(self,data):
+    def get_hits_and_sessions_fractions(self,data,observed_data,list_of_features):
         """
-        this function calculates the fraction of times a particular entry page has been visited
-        and the fraction of hits it has accumulated
-        :param data: original data frame
-        :return: a new data frame with 2 columns containing the fraction for each entry page
+        this function calculates the fraction of times a feature was used for visiting
+        and the fraction of hits it has contributed
+        :param data: data to be added
+        :param observed_data: data for which number of hits are given
+        :param list_of_features: the features to be observed
+        :return: enriched dataframe
         """
-        sessions_per_entry_page = data.groupby("entry_page")["row_num"].count()
-        hits_per_entry_page = data.groupby("entry_page")["revised_hits"].sum()
-        df_ep = pd.DataFrame({"total_sessions": sessions_per_entry_page, "total_hits": hits_per_entry_page})
+        for ftr in list_of_features:
+            sessions_per_feature = data.groupby(ftr)["row_num"].count()
+            hits_per_feature = observed_data.groupby(ftr)["revised_hits"].sum()
+            df_fraction = pd.DataFrame({"total_sessions": sessions_per_feature, "total_hits": hits_per_feature})
 
-        total_hits_all_pages = df_ep["total_hits"].sum()
-        total_sessions_all_pages = df_ep["total_sessions"].sum()
+            total_hits = df_fraction["total_hits"].sum()
+            total_sessions = df_fraction["total_sessions"].sum()
 
-        df_ep["session_fraction"] = df_ep.apply(lambda row: float(row.total_sessions)/total_sessions_all_pages, axis=1)
-        df_ep["hits_fraction"] = df_ep.apply(lambda row: float(row.total_hits)/total_hits_all_pages, axis=1)
+            df_fraction[ftr+"_session_fraction"] = df_fraction.apply(lambda row: float(row.total_sessions)/total_sessions, axis=1)
+            df_fraction[ftr+"_hits_fraction"] = df_fraction.apply(lambda row: float(row.total_hits)/total_hits, axis=1)
 
-        df_ep = df_ep.drop(["total_sessions","total_hits"],axis=1)
+            df_fraction = df_fraction.drop(["total_sessions","total_hits"],axis=1)
+            data = data.join(df_fraction, on=ftr)
 
-        return df_ep
+        # check for null values and fill them with zero if present
+        data = data.fillna(0)
+
+        return data
 
     def get_revised_hits(self,data):
         """
@@ -252,27 +259,29 @@ class HitsRegression:
             # get total number of locations visited
             data = self.get_total_locations(data)
 
-            # converting categorical columns to one-hot-encoded form into multiple columns
-            locale_dummy_df = pd.get_dummies(data["locale"])
-            day_of_week_dummy_df = pd.get_dummies(data["day_of_week"])
-            agent_id_dummy_df = pd.get_dummies(data["agent_id"])
-            traffic_type_dummy_df = pd.get_dummies(data["traffic_type"])
-            hour_of_day_dummy_df = pd.get_dummies(data["hour_of_day"])
+
+            list_of_categorical_features = ['locale','day_of_week','agent_id','traffic_type','hour_of_day']
+
+
 
             # get fraction of hits and sessions
-            df_fraction_hits_sessions = self.get_total_hits_and_sessions(data.loc[data["distributed_hits"] >= 0])
-
-            # join the new features with the original data
-            data = data.join(df_fraction_hits_sessions, on="entry_page")
-
-            # check for null values and fill them with zero if present
-            data = data.fillna(0)
+            list_of_features_for_fraction = ["entry_page"]+list_of_categorical_features
+            data = self.get_hits_and_sessions_fractions(data,data.loc[data["distributed_hits"] >= 0],list_of_features_for_fraction)
 
             # explode path id for each row into multiple rows
             data = self.get_path_id(data)
+            data.reset_index(drop=True, inplace=True)
 
-            # scaling some columns - entry page, path id, session duration and number of locations visited
-            array_of_non_categorical_features = data[["path_id", "entry_page", "session_duration", "number_of_locations_visited"]].values
+            # converting categorical columns to one-hot-encoded form into multiple columns
+            categorical_dummy_df_list = []
+            for ftr in list_of_categorical_features:
+                categorical_dummy_df_list.append(pd.get_dummies(data[ftr]))
+
+
+
+            # scaling non categorical columns - entry page, path id, session duration and number of locations visited
+            list_of_non_categorical_features = ["path_id", "entry_page", "session_duration", "number_of_locations_visited"]
+            array_of_non_categorical_features = data[list_of_non_categorical_features].values
 
             scaled_array = MinMaxScaler(feature_range=(0.05, 0.95)).fit_transform(
                 StandardScaler().fit_transform(array_of_non_categorical_features))
@@ -283,26 +292,17 @@ class HitsRegression:
                                       "new_number_of_locations_visited":scaled_array[:,3]})
 
             # removing un-necessary columns
-            list_of_features_to_remove = ["locale", "day_of_week", "hour_of_day",
-                                          "hits", "agent_id", "traffic_type",
-                                          "path_id", "entry_page", "session_duration",
-                                          "revised_hits","path_id_set","number_of_locations_visited"]
+            list_of_features_to_remove = list_of_categorical_features+list_of_non_categorical_features+["revised_hits","hits","path_id_set"]
             data = data.drop(list_of_features_to_remove, axis=1)
 
+
             # attaching the new columns to the original data
-            data = pd.concat([data, locale_dummy_df], axis=1)
-            data = pd.concat([data, day_of_week_dummy_df], axis=1)
-            data = pd.concat([data, agent_id_dummy_df], axis=1)
-            data = pd.concat([data, traffic_type_dummy_df], axis=1)
-            data = pd.concat([data, hour_of_day_dummy_df], axis=1)
+            for dummy_df in categorical_dummy_df_list:
+                data = pd.concat([data,dummy_df],axis=1)
 
-            # resetting the indices of the dataframe as 'row_num' is not unique anymore
-            # this is a part which is something very specific to pandas
-            data.reset_index(drop=True, inplace=True)
-
-
-            # adding the scaled non categorical features
             data = pd.concat([data, scaled_df],axis=1)
+
+            logging.info("feature engineering complete")
 
             # ensure that the data is clean
             assert(np.any(np.isnan(data.values))==False)
@@ -331,7 +331,6 @@ class HitsRegression:
             # attaching row_num with the validation input dataset
             x_val = input_data_validation.values
 
-
             # scaling output dataset
             y_train_std = scaler_y.transform(y_train["distributed_hits"].values.reshape(-1,1))
 
@@ -351,9 +350,9 @@ class HitsRegression:
         try:
             assert (x_train.shape[0]==y_train.shape[0])
             logging.info("Training model")
-            #model = MLPRegressor(hidden_layer_sizes=[100, 100],activation="relu")
+            model = MLPRegressor(hidden_layer_sizes=[100, 100],activation="relu")
             #model = RandomForestRegressor()
-            model = DecisionTreeRegressor()
+            #model = DecisionTreeRegressor()
             model.fit(x_train, y_train)
             return model
         except AssertionError as error:
