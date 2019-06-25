@@ -27,4 +27,4 @@ Predict the number of hits corresponding to the rows where the column `hits` has
 
 # Solution
 
-The code `hits_regression.py` contains the main class that is used for training the model. The code can be executed from the CLI as well.
+The code `hits_regression.py` contains the main class that is used for training the model. The code can be executed from the CLI as well. By default the `make_submission` argument of the `main` method of the class is set to `True`, which will create a separate CSV file containing 2 columns - `row_num` and `hits` for the all those rows where predictions are to be made. 
